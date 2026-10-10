@@ -1,0 +1,7 @@
+ArkUI contactless payment tag routing
+Known Alipay and UnionPay NDEF rules adapted from AviumUI's external NFC dispatcher.
+https://github.com/AviumUI/android_packages_modules_Nfc/commit/72a464d3911ec65c92a95dbd9f63200558fabe69
+Copyright (C) 2025 The AviumUI Project
+Copyright (C) 2026 The ArkUI Project
+Licensed under the Apache License, Version 2.0.
+The existing Android-Apache-2.0 module license supplies the license text.

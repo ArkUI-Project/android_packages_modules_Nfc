@@ -674,6 +674,9 @@ class NfcDispatcher {
         if (tryOemPackage(tag, message)) {
             return DISPATCH_SUCCESS;
         }
+        if (!provisioningOnly && tryPaymentTag(dispatch, message)) {
+            return screenUnlocked ? DISPATCH_UNLOCK : DISPATCH_SUCCESS;
+        }
         if (tryNdef(dispatch, message)) {
             return screenUnlocked ? DISPATCH_UNLOCK : DISPATCH_SUCCESS;
         }
@@ -925,6 +928,54 @@ class NfcDispatcher {
             }
         }
         return false;
+    }
+
+    private boolean tryPaymentTag(DispatchInfo dispatch, NdefMessage message) {
+        int userId = ActivityManager.getCurrentUser();
+        if (mScreenStateHelper.checkScreenState(
+                        mDeviceConfigFacade.getCheckDisplayStateForScreenState())
+                        != ScreenStateHelper.SCREEN_STATE_ON_UNLOCKED) return false;
+        Context userContext = mContext.createContextAsUser(UserHandle.of(userId), 0);
+        if (android.provider.Settings.Secure.getInt(userContext.getContentResolver(),
+                "arkui_nfc_contactless_payment", 0) == 0) return false;
+        android.content.ComponentName component = PaymentTagRouter.match(message);
+        if (component == null) return false;
+
+        // Use the real registered Tag and the standard NFC task, after foreground dispatch.
+        // A failed or denied target leaves the original dispatch intent intact for normal routing.
+        Intent target = new Intent(dispatch.intent)
+                .setAction(NfcAdapter.ACTION_NDEF_DISCOVERED).setComponent(component)
+                .setDataAndType(null, "com.unionpay".equals(component.getPackageName())
+                        ? "application/com.tag.tagpay" : null);
+        List<ResolveInfo> activities = dispatch.packageManager.queryIntentActivitiesAsUser(
+                target, ResolveInfoFlags.of(MATCH_DEFAULT_ONLY), UserHandle.of(userId));
+        activities = activities.stream().filter(info -> info.activityInfo.exported
+                && info.activityInfo.enabled && info.activityInfo.applicationInfo.enabled
+                && (info.activityInfo.applicationInfo.flags
+                        & android.content.pm.ApplicationInfo.FLAG_SUSPENDED) == 0
+                && (info.activityInfo.permission == null
+                        || mContext.checkSelfPermission(info.activityInfo.permission)
+                                == PackageManager.PERMISSION_GRANTED)).collect(Collectors.toList());
+        if (activities.isEmpty()) return false;
+        if (dispatch.mIsTagAppPrefSupported) {
+            activities = dispatch.checkPrefList(activities, userId);
+            if (activities.isEmpty()) return false;
+        }
+        Intent root = new Intent(mContext, NfcRootActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .putExtra(NfcRootActivity.EXTRA_LAUNCH_INTENT, target)
+                .putExtra(NfcRootActivity.EXTRA_LAUNCH_INTENT_USER_HANDLE, UserHandle.of(userId));
+        try {
+            mContext.startActivityAsUser(root, UserHandle.of(userId));
+            NfcStatsLog.write(NfcStatsLog.NFC_TAG_OCCURRED,
+                    NfcStatsLog.NFC_TAG_OCCURRED__TYPE__APP_LAUNCH,
+                    activities.get(0).activityInfo.applicationInfo.uid,
+                    dispatch.tag.getTechCodeList(), BluetoothProtoEnums.MAJOR_CLASS_UNCATEGORIZED, "");
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            Log.w(TAG, "Payment tag target unavailable; falling back to standard dispatch", e);
+            return false;
+        }
     }
 
     boolean tryNdef(DispatchInfo dispatch, NdefMessage message) {
